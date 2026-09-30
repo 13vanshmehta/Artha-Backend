@@ -20,6 +20,7 @@ import {
 } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
+import { MailService } from '../auth/mail.service';
 import { ResourceAuthorizationService } from './authorization.service';
 import {
   AddGroupMemberDto,
@@ -43,6 +44,7 @@ export class FinanceController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authz: ResourceAuthorizationService,
+    private readonly mailService: MailService,
   ) {}
 
   @Post('expenses')
@@ -74,6 +76,37 @@ export class FinanceController {
         notes: dto.notes?.trim() ?? null,
       },
     });
+
+    if (dto.groupId) {
+      this.prisma.expenseGroupMember
+        .findMany({
+          where: { groupId: dto.groupId, userId: { not: user.userId } },
+          include: {
+            user: { select: { email: true, displayName: true } },
+            group: { select: { name: true, currency: true } },
+          },
+        })
+        .then((members) => {
+          for (const m of members) {
+            if (m.user?.email && m.group?.name) {
+              this.mailService
+                .sendExpenseAddedEmail({
+                  to: m.user.email,
+                  recipientName: m.user.displayName,
+                  groupName: m.group.name,
+                  addedByName: user.displayName || 'A group member',
+                  merchant: expense.merchant,
+                  category: expense.category,
+                  amount: expense.amount,
+                  currency: m.group.currency,
+                  notes: expense.notes ?? undefined,
+                })
+                .catch(() => {});
+            }
+          }
+        })
+        .catch(() => {});
+    }
 
     return { expense };
   }
@@ -251,7 +284,13 @@ export class FinanceController {
 
     const targetUser = await this.prisma.user.findUnique({
       where: { id: dto.userId },
-      select: { id: true, status: true, deletedAt: true },
+      select: {
+        id: true,
+        status: true,
+        deletedAt: true,
+        email: true,
+        displayName: true,
+      },
     });
 
     if (
@@ -301,6 +340,26 @@ export class FinanceController {
         role: requestedRole,
       },
     });
+
+    // Notify new member via group invitation email
+    if (!existingTargetMembership && targetUser.email) {
+      this.prisma.expenseGroup
+        .findUnique({ where: { id: groupId }, select: { name: true } })
+        .then((group) => {
+          if (group) {
+            this.mailService
+              .sendGroupInvitationEmail({
+                to: targetUser.email,
+                recipientName: targetUser.displayName || 'Artha Member',
+                inviterName: user.displayName || 'An Artha member',
+                groupName: group.name,
+                role: requestedRole,
+              })
+              .catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
 
     return { member };
   }

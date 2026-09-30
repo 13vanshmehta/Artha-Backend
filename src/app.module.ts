@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { IpAwareThrottlerGuard } from './common/guards/ip-throttler.guard';
 import { validateEnvironment } from './config/env.validation';
+import { EmailModule } from './email/email.module';
 import { FinanceModule } from './finance/finance.module';
 import { PrismaModule } from './prisma/prisma.module';
 
@@ -28,6 +29,7 @@ import { PrismaModule } from './prisma/prisma.module';
       },
     ]),
     PrismaModule,
+    EmailModule,
     AuthModule,
     FinanceModule,
   ],
