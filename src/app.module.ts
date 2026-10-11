@@ -17,8 +17,10 @@ import { PrismaModule } from './prisma/prisma.module';
       isGlobal: true,
       envFilePath:
         process.env.NODE_ENV === 'production'
-          ? ['.env.production', '.env.local']
-          : ['.env.local', '.env.production'],
+          ? ['.env.production']
+          : process.env.NODE_ENV === 'test'
+            ? ['.env.local']
+            : ['.env.development', '.env.local'],
       validate: validateEnvironment,
     }),
     ThrottlerModule.forRoot([
