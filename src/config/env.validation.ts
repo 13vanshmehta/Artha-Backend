@@ -21,6 +21,10 @@ export interface ValidatedEnvConfig {
   PASSWORD_RESET_TTL_MINUTES: number;
   EMAIL_PROVIDER: 'smtp' | 'local-outbox';
   EMAIL_FROM: string;
+  APP_NAME: string;
+  APP_URL: string;
+  SUPPORT_EMAIL: string;
+  EMAIL_LOGO_URL: string;
   SMTP_HOST: string;
   SMTP_PORT: number;
   SMTP_SECURE: boolean;
@@ -243,8 +247,12 @@ export function validateEnvironment(
       rawEnv.EMAIL_FROM,
       smtpUser
         ? `Artha Security <${smtpUser}>`
-        : 'Artha Security <no-reply@artha.app>',
+        : 'Artha Security <aartha.app@gmail.com>',
     ),
+    APP_NAME: readString(rawEnv.APP_NAME, 'Artha'),
+    APP_URL: readString(rawEnv.APP_URL, 'https://artha.app'),
+    SUPPORT_EMAIL: readString(rawEnv.SUPPORT_EMAIL, 'aartha.app@gmail.com'),
+    EMAIL_LOGO_URL: readString(rawEnv.EMAIL_LOGO_URL, ''),
     SMTP_HOST: readString(rawEnv.SMTP_HOST, 'smtp.gmail.com'),
     SMTP_PORT: parsePositiveInt(rawEnv.SMTP_PORT, 465, 'SMTP_PORT'),
     SMTP_SECURE:

@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -82,6 +83,8 @@ const PIN_LOCKOUT_MINUTES = 15;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService<ValidatedEnvConfig, true>,
@@ -498,6 +501,31 @@ export class AuthService {
       userAgent: reqMeta.userAgent,
     });
 
+    // Send transactional verification confirmed & welcome emails on first verification
+    if (user.status === UserStatus.UNVERIFIED) {
+      this.mailService
+        .sendEmailVerificationConfirmedEmail({
+          to: verifiedUser.email,
+          email: verifiedUser.email,
+          displayName: verifiedUser.displayName,
+        })
+        .catch((err: Error) =>
+          this.logger.warn(
+            `Failed to deliver email verification confirmation: ${err.message}`,
+          ),
+        );
+
+      this.mailService
+        .sendWelcomeEmail({
+          to: verifiedUser.email,
+          email: verifiedUser.email,
+          displayName: verifiedUser.displayName,
+        })
+        .catch((err: Error) =>
+          this.logger.warn(`Failed to deliver welcome email: ${err.message}`),
+        );
+    }
+
     return this.createAuthenticatedSession({
       user: verifiedUser,
       deviceName: dto.deviceName ?? 'Artha Mobile Client',
@@ -888,6 +916,18 @@ export class AuthService {
       metadata: { revokedOtherSessions: revokeOthers },
     });
 
+    this.mailService
+      .sendPasswordResetCompletedEmail({
+        to: user.email,
+        displayName: user.displayName,
+        changedAt: now,
+      })
+      .catch((err: Error) =>
+        this.logger.warn(
+          `Failed to deliver password changed confirmation email: ${err.message}`,
+        ),
+      );
+
     return {
       message: 'Password updated successfully.',
     };
@@ -1087,6 +1127,18 @@ export class AuthService {
           },
         });
       });
+
+      this.mailService
+        .sendWelcomeEmail({
+          to: newUser.email,
+          email: newUser.email,
+          displayName: newUser.displayName,
+        })
+        .catch((err: Error) =>
+          this.logger.warn(
+            `Failed to deliver OAuth welcome email: ${err.message}`,
+          ),
+        );
 
       return this.createAuthenticatedSession({
         user: newUser,
@@ -1915,6 +1967,18 @@ export class AuthService {
       ipAddress: reqMeta.ipAddress,
       userAgent: reqMeta.userAgent,
     });
+
+    this.mailService
+      .sendAccountDeletedEmail({
+        to: user.email,
+        displayName: user.displayName,
+        effectiveDate: now,
+      })
+      .catch((err: Error) =>
+        this.logger.warn(
+          `Failed to deliver account deleted confirmation email: ${err.message}`,
+        ),
+      );
 
     return {
       message: 'Your Artha account has been permanently deleted.',

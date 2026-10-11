@@ -7,6 +7,7 @@ import { ResourceAuthorizationService } from '../finance/authorization.service';
 import { FinanceController } from '../finance/finance.controller';
 import { buildPooledDatabaseUrl, PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from './crypto.service';
+import { MailService } from './mail.service';
 
 describe('CryptoService, Redaction, Authorization & Environment Validation (Unit)', () => {
   const cryptoService = new CryptoService();
@@ -236,7 +237,16 @@ describe('CryptoService, Redaction, Authorization & Environment Validation (Unit
       }),
     } as unknown as ResourceAuthorizationService;
 
-    const controller = new FinanceController(mockPrisma, mockAuthz);
+    const mockMailService = {
+      sendGroupInvitationEmail: jest.fn().mockResolvedValue(undefined),
+      sendExpenseAddedEmail: jest.fn().mockResolvedValue(undefined),
+    } as unknown as MailService;
+
+    const controller = new FinanceController(
+      mockPrisma,
+      mockAuthz,
+      mockMailService,
+    );
 
     // 1. ADMIN attempting to escalate a user to OWNER must be rejected with ForbiddenException
     await expect(

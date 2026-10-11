@@ -43,10 +43,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
         errorCode = this.defaultErrorCodeForStatus(status);
       }
     } else {
+      const errStack = exception instanceof Error ? exception.stack : String(exception);
       if (process.env.NODE_ENV !== 'test') {
         this.logger.error(
-          `Unhandled error on ${request.method} ${request.url}`,
+          `Unhandled error on ${request.method} ${request.url}: ${errStack}`,
         );
+      }
+      if (process.env.NODE_ENV !== 'production' && exception instanceof Error) {
+        message = exception.message;
+        details = { stack: exception.stack };
       }
     }
 
