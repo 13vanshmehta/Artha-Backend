@@ -20,6 +20,7 @@ import { CryptoService } from './crypto.service';
 import {
   AppleOAuthDto,
   ChangePasswordDto,
+  ConfirmEmailChangeDto,
   ConfirmEmailVerificationDto,
   DeleteAccountDto,
   ForgotPasswordDto,
@@ -27,6 +28,7 @@ import {
   LoginDto,
   ReauthenticateDto,
   RegisterDto,
+  RequestEmailChangeDto,
   ResetPasswordDto,
   SendEmailVerificationDto,
   UpdateProfileDto,
@@ -47,6 +49,7 @@ export interface SanitizedUser {
   id: string;
   displayName: string;
   email: string;
+  phoneNumber?: string | null;
   avatarUrl?: string | null;
   emailVerified: boolean;
   emailVerifiedAt: string | null;
@@ -1624,6 +1627,78 @@ export class AuthService {
     };
   }
 
+  private deriveOperatingSystem(
+    platform: string,
+    userAgent?: string | null,
+  ): string {
+    const ua = (userAgent || '').toLowerCase();
+    const p = (platform || '').toLowerCase();
+
+    if (p.includes('ios') || ua.includes('iphone') || ua.includes('ipad')) {
+      const match = ua.match(/os (\d+[._]\d+)/);
+      return match ? `iOS ${match[1].replace('_', '.')}` : 'iOS';
+    }
+    if (p.includes('android') || ua.includes('android')) {
+      const match = ua.match(/android (\d+(\.\d+)?)/);
+      return match ? `Android ${match[1]}` : 'Android';
+    }
+    if (p.includes('mac') || ua.includes('macintosh') || ua.includes('mac os')) {
+      return 'macOS';
+    }
+    if (p.includes('win') || ua.includes('windows')) {
+      return 'Windows';
+    }
+    if (p.includes('linux') || ua.includes('linux')) {
+      return 'Linux';
+    }
+    if (p) {
+      return p.charAt(0).toUpperCase() + p.slice(1);
+    }
+    return 'Unknown OS';
+  }
+
+  private deriveDeviceType(
+    platform: string,
+    userAgent?: string | null,
+  ): 'mobile' | 'tablet' | 'desktop' | 'web' {
+    const ua = (userAgent || '').toLowerCase();
+    const p = (platform || '').toLowerCase();
+
+    if (ua.includes('ipad') || ua.includes('tablet')) return 'tablet';
+    if (
+      p.includes('ios') ||
+      p.includes('android') ||
+      ua.includes('mobile') ||
+      ua.includes('iphone')
+    ) {
+      return 'mobile';
+    }
+    if (
+      p.includes('mac') ||
+      p.includes('win') ||
+      p.includes('linux') ||
+      p.includes('desktop')
+    ) {
+      return 'desktop';
+    }
+    return 'mobile';
+  }
+
+  private deriveApproximateLocation(ipAddress?: string | null): string {
+    if (!ipAddress) return 'India';
+    if (
+      ipAddress === '127.0.0.1' ||
+      ipAddress === '::1' ||
+      ipAddress.startsWith('10.') ||
+      ipAddress.startsWith('192.168.') ||
+      ipAddress.startsWith('172.') ||
+      ipAddress === 'localhost'
+    ) {
+      return 'Mumbai, India';
+    }
+    return 'India';
+  }
+
   async listSessions(
     userId: string,
     currentSessionId: string,
@@ -1632,6 +1707,9 @@ export class AuthService {
       id: string;
       deviceName: string;
       platform: string;
+      deviceType: 'mobile' | 'tablet' | 'desktop' | 'web';
+      operatingSystem: string;
+      approximateLocation: string;
       ipAddress: string | null;
       createdAt: string;
       lastUsedAt: string;
@@ -1653,7 +1731,10 @@ export class AuthService {
       id: s.id,
       deviceName: s.deviceName,
       platform: s.platform,
-      ipAddress: s.ipAddress,
+      deviceType: this.deriveDeviceType(s.platform, s.userAgent),
+      operatingSystem: this.deriveOperatingSystem(s.platform, s.userAgent),
+      approximateLocation: this.deriveApproximateLocation(s.ipAddress),
+      ipAddress: null, // Protected: raw IP address is never exposed by default to the frontend
       createdAt: s.createdAt.toISOString(),
       lastUsedAt: s.lastUsedAt.toISOString(),
       expiresAt: s.expiresAt.toISOString(),
@@ -1666,7 +1747,8 @@ export class AuthService {
     currentSessionId: string,
     targetSessionId: string,
     reqMeta: RequestMetadata,
-  ): Promise<{ message: string; revokedSessionId: string }> {
+    isSuspicious = false,
+  ): Promise<{ message: string; revokedSessionId: string; isSuspicious?: boolean }> {
     const targetSession = await this.prisma.authSession.findFirst({
       where: {
         id: targetSessionId,
@@ -1682,13 +1764,16 @@ export class AuthService {
     }
 
     const now = new Date();
+    const reason = isSuspicious
+      ? 'UNKNOWN_DEVICE_REPORTED'
+      : 'USER_REVOKED_SPECIFIC_SESSION';
+
     await this.prisma.$transaction([
       this.prisma.authSession.update({
         where: { id: targetSessionId },
         data: {
           revokedAt: targetSession.revokedAt ?? now,
-          revokeReason:
-            targetSession.revokeReason ?? 'USER_REVOKED_SPECIFIC_SESSION',
+          revokeReason: reason,
         },
       }),
       this.prisma.refreshToken.updateMany({
@@ -1698,17 +1783,44 @@ export class AuthService {
     ]);
 
     await this.securityLogger.record({
-      eventType: 'SESSION_REVOKED',
+      eventType: isSuspicious ? 'UNKNOWN_DEVICE_REPORTED' : 'SESSION_REVOKED',
       userId,
       sessionId: currentSessionId,
       ipAddress: reqMeta.ipAddress,
       userAgent: reqMeta.userAgent,
-      metadata: { targetSessionId },
+      metadata: { targetSessionId, isSuspicious },
     });
 
     return {
-      message: 'Session revoked successfully.',
+      message: isSuspicious
+        ? 'Unknown device reported and signed out successfully. For your security, we recommend changing your password.'
+        : 'Session revoked successfully.',
       revokedSessionId: targetSessionId,
+      isSuspicious,
+    };
+  }
+
+  async reportSuspiciousSession(
+    userId: string,
+    currentSessionId: string,
+    targetSessionId: string,
+    reqMeta: RequestMetadata,
+  ): Promise<{
+    message: string;
+    revokedSessionId: string;
+    recommendedAction: string;
+  }> {
+    const result = await this.revokeSession(
+      userId,
+      currentSessionId,
+      targetSessionId,
+      reqMeta,
+      true,
+    );
+    return {
+      message: result.message,
+      revokedSessionId: result.revokedSessionId,
+      recommendedAction: 'CHANGE_PASSWORD',
     };
   }
 
@@ -1753,7 +1865,7 @@ export class AuthService {
     });
 
     await this.securityLogger.record({
-      eventType: 'OTHER_SESSIONS_REVOKED',
+      eventType: 'LOGOUT_ALL_OTHER_DEVICES',
       userId,
       sessionId: currentSessionId,
       ipAddress: reqMeta.ipAddress,
@@ -1795,17 +1907,29 @@ export class AuthService {
     dto: UpdateProfileDto,
     reqMeta: RequestMetadata,
   ): Promise<SanitizedUser> {
-    const cleanName = dto.displayName.trim();
-    if (cleanName.length < 2 || cleanName.length > 80) {
-      throw new BadRequestException({
-        errorCode: 'INVALID_DISPLAY_NAME',
-        message: 'Full name must be between 2 and 80 characters.',
-      });
+    const updateData: {
+      displayName?: string;
+      phoneNumber?: string | null;
+    } = {};
+
+    if (dto.displayName) {
+      const cleanName = dto.displayName.trim();
+      if (cleanName.length < 2 || cleanName.length > 80) {
+        throw new BadRequestException({
+          errorCode: 'INVALID_DISPLAY_NAME',
+          message: 'Full name must be between 2 and 80 characters.',
+        });
+      }
+      updateData.displayName = cleanName;
+    }
+
+    if (dto.phoneNumber !== undefined) {
+      updateData.phoneNumber = dto.phoneNumber ? dto.phoneNumber.trim() : null;
     }
 
     const updated = await this.prisma.user.update({
       where: { id: userId },
-      data: { displayName: cleanName },
+      data: updateData,
       include: {
         identities: true,
         securityPreference: true,
@@ -1818,10 +1942,306 @@ export class AuthService {
       sessionId,
       ipAddress: reqMeta.ipAddress,
       userAgent: reqMeta.userAgent,
-      metadata: { displayNameUpdated: true },
+      metadata: {
+        displayNameUpdated: Boolean(dto.displayName),
+      },
     });
 
     return this.sanitizeUser(updated);
+  }
+
+  /**
+   * Changing a verified identity's email is security-sensitive: the new address must
+   * prove ownership via OTP before it replaces the old one (reuses EmailVerificationChallenge).
+   */
+  async requestEmailChange(
+    userId: string,
+    sessionId: string,
+    dto: RequestEmailChangeDto,
+    reqMeta: RequestMetadata,
+  ): Promise<{
+    message: string;
+    otpExpiresInSeconds: number;
+    resendCooldownSeconds: number;
+  }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.deletedAt !== null) {
+      throw new UnauthorizedException({
+        errorCode: 'UNAUTHORIZED',
+        message: 'Session is no longer valid.',
+      });
+    }
+
+    const cleanEmail = dto.newEmail.trim();
+    const normalizedEmail = this.cryptoService.normalizeEmail(cleanEmail);
+
+    if (normalizedEmail === user.normalizedEmail) {
+      throw new BadRequestException({
+        errorCode: 'EMAIL_UNCHANGED',
+        message: 'This is already your current email address.',
+      });
+    }
+
+    const existing = await this.prisma.user.findUnique({
+      where: { normalizedEmail },
+    });
+    if (existing && existing.id !== userId) {
+      throw new ConflictException({
+        errorCode: 'EMAIL_ALREADY_REGISTERED',
+        message: 'An account with this email address already exists.',
+      });
+    }
+
+    const otpExpiryMinutes = this.configService.get('OTP_EXPIRY_MINUTES', {
+      infer: true,
+    });
+    const maxAttempts = this.configService.get('OTP_MAX_ATTEMPTS', {
+      infer: true,
+    });
+    const resendCooldownSeconds = this.configService.get(
+      'OTP_RESEND_COOLDOWN_SECONDS',
+      { infer: true },
+    );
+
+    const now = new Date();
+    const latestChallenge =
+      await this.prisma.emailVerificationChallenge.findFirst({
+        where: { userId, consumedAt: null },
+        orderBy: { createdAt: 'desc' },
+      });
+
+    if (latestChallenge && latestChallenge.resendAvailableAt > now) {
+      const retryAfterSeconds = Math.ceil(
+        (latestChallenge.resendAvailableAt.getTime() - now.getTime()) / 1000,
+      );
+      throw new HttpException(
+        {
+          errorCode: 'OTP_RESEND_COOLDOWN',
+          message: `Please wait ${retryAfterSeconds} seconds before requesting another verification code.`,
+          details: { retryAfterSeconds },
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const otp = this.cryptoService.generateSixDigitOtp();
+    const otpHash = await this.cryptoService.hashSecret(otp);
+    const expiresAt = new Date(now.getTime() + otpExpiryMinutes * 60 * 1000);
+    const resendAvailableAt = new Date(
+      now.getTime() + resendCooldownSeconds * 1000,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.emailVerificationChallenge.updateMany({
+        where: { userId, consumedAt: null },
+        data: { consumedAt: now },
+      });
+
+      await tx.emailVerificationChallenge.create({
+        data: {
+          userId,
+          email: cleanEmail,
+          otpHash,
+          expiresAt,
+          maxAttempts,
+          resendAvailableAt,
+        },
+      });
+    });
+
+    await this.mailService.sendVerificationOtpEmail({
+      to: cleanEmail,
+      displayName: user.displayName,
+      otp,
+      expiresInMinutes: otpExpiryMinutes,
+    });
+
+    await this.securityLogger.record({
+      eventType: 'EMAIL_CHANGE_REQUESTED',
+      userId,
+      sessionId,
+      ipAddress: reqMeta.ipAddress,
+      userAgent: reqMeta.userAgent,
+    });
+
+    return {
+      message: `A verification code has been sent to ${cleanEmail}.`,
+      otpExpiresInSeconds: otpExpiryMinutes * 60,
+      resendCooldownSeconds,
+    };
+  }
+
+  async confirmEmailChange(
+    userId: string,
+    sessionId: string,
+    dto: ConfirmEmailChangeDto,
+    reqMeta: RequestMetadata,
+  ): Promise<{ message: string; user: SanitizedUser }> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.deletedAt !== null) {
+      throw new UnauthorizedException({
+        errorCode: 'UNAUTHORIZED',
+        message: 'Session is no longer valid.',
+      });
+    }
+
+    const latestChallenge =
+      await this.prisma.emailVerificationChallenge.findFirst({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+      });
+
+    if (!latestChallenge || latestChallenge.email === user.email) {
+      throw new BadRequestException({
+        errorCode: 'NO_PENDING_EMAIL_CHANGE',
+        message: 'No pending email change request found. Please request a new one.',
+      });
+    }
+
+    if (latestChallenge.consumedAt !== null) {
+      throw new BadRequestException({
+        errorCode: 'OTP_ALREADY_USED',
+        message:
+          'This verification code has already been used. Please request a new code if needed.',
+      });
+    }
+
+    const now = new Date();
+    if (latestChallenge.expiresAt <= now) {
+      throw new BadRequestException({
+        errorCode: 'OTP_EXPIRED',
+        message:
+          'Verification code has expired. Please request a new 6-digit code.',
+      });
+    }
+
+    if (latestChallenge.failedAttempts >= latestChallenge.maxAttempts) {
+      throw new HttpException(
+        {
+          errorCode: 'OTP_MAX_ATTEMPTS_EXCEEDED',
+          message:
+            'Maximum verification attempts exceeded. Please request a new code.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const isOtpValid = await this.cryptoService.verifySecret(
+      latestChallenge.otpHash,
+      dto.code,
+    );
+
+    if (!isOtpValid) {
+      const updated = await this.prisma.emailVerificationChallenge.update({
+        where: { id: latestChallenge.id },
+        data: { failedAttempts: { increment: 1 } },
+      });
+
+      await this.securityLogger.record({
+        eventType: 'EMAIL_CHANGE_OTP_FAILED',
+        userId,
+        sessionId,
+        ipAddress: reqMeta.ipAddress,
+        userAgent: reqMeta.userAgent,
+        metadata: {
+          failedAttempts: updated.failedAttempts,
+          maxAttempts: updated.maxAttempts,
+        },
+      });
+
+      if (updated.failedAttempts >= updated.maxAttempts) {
+        throw new HttpException(
+          {
+            errorCode: 'OTP_MAX_ATTEMPTS_EXCEEDED',
+            message:
+              'Maximum verification attempts exceeded. Please request a new code.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+
+      throw new BadRequestException({
+        errorCode: 'INVALID_OTP',
+        message: 'Invalid verification code.',
+        details: {
+          remainingAttempts: Math.max(
+            0,
+            updated.maxAttempts - updated.failedAttempts,
+          ),
+        },
+      });
+    }
+
+    const newEmail = latestChallenge.email;
+    const newNormalizedEmail = this.cryptoService.normalizeEmail(newEmail);
+    const oldEmail = user.email;
+
+    let updatedUser: Awaited<ReturnType<typeof this.prisma.user.update>>;
+    try {
+      updatedUser = await this.prisma.$transaction(async (tx) => {
+        const consumed = await tx.emailVerificationChallenge.updateMany({
+          where: { id: latestChallenge.id, consumedAt: null },
+          data: { consumedAt: now },
+        });
+
+        if (consumed.count !== 1) {
+          throw new BadRequestException({
+            errorCode: 'OTP_ALREADY_USED',
+            message: 'This verification code has already been used.',
+          });
+        }
+
+        return tx.user.update({
+          where: { id: userId },
+          data: {
+            email: newEmail,
+            normalizedEmail: newNormalizedEmail,
+            emailVerifiedAt: now,
+          },
+          include: {
+            identities: true,
+            securityPreference: true,
+          },
+        });
+      });
+    } catch (err: unknown) {
+      const prismaCode = (err as { code?: string })?.code;
+      if (prismaCode === 'P2002') {
+        throw new ConflictException({
+          errorCode: 'EMAIL_ALREADY_REGISTERED',
+          message: 'An account with this email address already exists.',
+        });
+      }
+      throw err;
+    }
+
+    await this.securityLogger.record({
+      eventType: 'EMAIL_CHANGED',
+      userId,
+      sessionId,
+      ipAddress: reqMeta.ipAddress,
+      userAgent: reqMeta.userAgent,
+    });
+
+    // Protect other devices in case this change wasn't authorized by the account owner.
+    await this.revokeOtherSessions(userId, sessionId, reqMeta);
+
+    this.mailService
+      .sendEmailChangedEmail({
+        to: oldEmail,
+        displayName: updatedUser.displayName,
+        oldEmail,
+        newEmail,
+        changedAt: now,
+      })
+      .catch((err: Error) =>
+        this.logger.warn(`Failed to deliver email-changed notice: ${err.message}`),
+      );
+
+    return {
+      message: 'Your email address has been updated.',
+      user: this.sanitizeUser(updatedUser),
+    };
   }
 
   async deleteAccount(
@@ -1830,10 +2250,11 @@ export class AuthService {
     dto: DeleteAccountDto,
     reqMeta: RequestMetadata,
   ): Promise<{ message: string; deletedAt: string }> {
-    if (dto.confirmationText.trim().toUpperCase() !== 'DELETE') {
+    const confirmation = (dto.confirmationText ?? '').trim().toUpperCase();
+    if (!dto.password && confirmation !== 'DELETE') {
       throw new BadRequestException({
         errorCode: 'CONFIRMATION_REQUIRED',
-        message: 'Please type DELETE to confirm permanent account deletion.',
+        message: 'Please provide your password or type DELETE to confirm permanent account deletion.',
       });
     }
 
@@ -2439,6 +2860,7 @@ export class AuthService {
       id: user.id,
       displayName: user.displayName,
       email: user.email,
+      phoneNumber: user.phoneNumber ?? null,
       avatarUrl: user.avatarUrl ?? null,
       emailVerified: user.emailVerifiedAt !== null,
       emailVerifiedAt: user.emailVerifiedAt

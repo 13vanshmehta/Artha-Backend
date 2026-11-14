@@ -346,7 +346,32 @@ export class AuthController {
     @Param('sessionId', new ParseUUIDPipe()) sessionId: string,
     @Req() req: Request,
   ) {
+    const isSuspicious =
+      req.query?.isSuspicious === 'true' ||
+      Boolean((req.body as Record<string, unknown> | undefined)?.isSuspicious);
     return this.authService.revokeSession(
+      user.userId,
+      user.sessionId,
+      sessionId,
+      this.extractMeta(req),
+      isSuspicious,
+    );
+  }
+
+  @Post('sessions/:sessionId/report-suspicious')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Report an unknown or suspicious device session and immediately revoke it',
+  })
+  async reportSuspiciousSession(
+    @CurrentUser() user: AuthenticatedPrincipal,
+    @Param('sessionId', new ParseUUIDPipe()) sessionId: string,
+    @Req() req: Request,
+  ) {
+    return this.authService.reportSuspiciousSession(
       user.userId,
       user.sessionId,
       sessionId,
@@ -363,6 +388,25 @@ export class AuthController {
       'Revoke all active sessions except the current device session',
   })
   async revokeOtherSessions(
+    @CurrentUser() user: AuthenticatedPrincipal,
+    @Req() req: Request,
+  ) {
+    return this.authService.revokeOtherSessions(
+      user.userId,
+      user.sessionId,
+      this.extractMeta(req),
+    );
+  }
+
+  @Post('sessions/logout-others')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Alias: Revoke and logout all sessions except the current device session',
+  })
+  async logoutOtherSessions(
     @CurrentUser() user: AuthenticatedPrincipal,
     @Req() req: Request,
   ) {

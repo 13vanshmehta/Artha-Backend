@@ -42,6 +42,7 @@ model User {
   displayName     String
   email           String
   normalizedEmail String     @unique
+  phoneNumber     String?
   emailVerifiedAt DateTime?
   passwordHash    String?
   avatarUrl       String?
