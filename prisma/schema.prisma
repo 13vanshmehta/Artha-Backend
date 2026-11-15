@@ -27,9 +27,52 @@ enum GroupRole {
   MEMBER
 }
 
+/// The five ledger movements. See docs/API_CONTRACT.md §Transactions for the
+/// per-type account/category rules (also enforced by a CHECK constraint).
 enum TransactionType {
-  EXPENSE
   INCOME
+  EXPENSE
+  TRANSFER
+  REFUND
+  ADJUSTMENT
+}
+
+enum AccountType {
+  CASH
+  BANK
+  WALLET
+  CREDIT_CARD
+  OTHER
+}
+
+enum CategoryType {
+  INCOME
+  EXPENSE
+}
+
+/// How the money moved (rail), as opposed to Account (where the money lives).
+enum PaymentMethod {
+  CASH
+  UPI
+  DEBIT_CARD
+  CREDIT_CARD
+  BANK_TRANSFER
+  WALLET
+  OTHER
+}
+
+/// Where a transaction came from. Phase 1 writes MANUAL only.
+enum TransactionSource {
+  MANUAL
+  BANK_STATEMENT
+  BANK_SYNC
+  IMPORT
+  SYSTEM
+}
+
+enum AdjustmentDirection {
+  INCREASE
+  DECREASE
 }
 
 /// What an emailed verification code is allowed to do. Sign-up codes and
@@ -45,6 +88,8 @@ model User {
   email           String
   normalizedEmail String     @unique
   phoneNumber     String?
+  /// IANA zone that defines "today", "this month", etc. for this user's data.
+  timezone        String     @default("Asia/Kolkata")
   emailVerifiedAt DateTime?
   passwordHash    String?
   avatarUrl       String?
@@ -60,7 +105,9 @@ model User {
   passwordResetChallenges     PasswordResetChallenge[]
   securityEvents              SecurityEvent[]
   securityPreference          UserSecurityPreference?
-  expenses                    ExpenseRecord[]
+  accounts                    Account[]
+  categories                  Category[]
+  transactions                Transaction[]
   groupMemberships            ExpenseGroupMember[]
   createdGroups               ExpenseGroup[]               @relation("GroupCreator")
 
@@ -145,7 +192,7 @@ model RefreshToken {
 }
 
 model EmailVerificationChallenge {
-  id                String    @id @default(uuid()) @db.Uuid
+  id                String                @id @default(uuid()) @db.Uuid
   userId            String                @db.Uuid
   purpose           EmailChallengePurpose @default(SIGNUP_VERIFICATION)
   email             String
@@ -208,7 +255,6 @@ model ExpenseGroup {
 
   createdBy User                 @relation("GroupCreator", fields: [createdById], references: [id], onDelete: Cascade)
   members   ExpenseGroupMember[]
-  expenses  ExpenseRecord[]
 
   @@index([createdById])
 }
@@ -227,23 +273,109 @@ model ExpenseGroupMember {
   @@index([userId])
 }
 
-model ExpenseRecord {
-  id            String          @id @default(uuid()) @db.Uuid
-  ownerId       String          @db.Uuid
-  groupId       String?         @db.Uuid
-  merchant      String
-  category      String
-  amount        Float
-  type          TransactionType @default(EXPENSE)
-  paymentMethod String
-  notes         String?
-  incurredAt    DateTime        @default(now())
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+// ---------------------------------------------------------------------------
+// Personal Expense Tracker ledger
+//
+// All money is BIGINT minor units (paise for INR). All new timestamps are
+// timestamptz so `AT TIME ZONE <user tz>` bucketing is correct.
+//
+// The migration also creates constraints Prisma cannot express in this file.
+// Keep them when editing these models, and re-add them if a generated
+// migration tries to drop them:
+//   - Account_userId_active_name_key    UNIQUE (userId, lower(name)) WHERE NOT isArchived
+//   - Account_userId_default_key        UNIQUE (userId) WHERE isDefault
+//   - Category_userId_type_active_name_key UNIQUE (userId, type, lower(name)) WHERE custom AND NOT isArchived
+//   - CHECK constraints on amounts, currency codes and per-type field shape
+// ---------------------------------------------------------------------------
 
-  owner User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  group ExpenseGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+model Account {
+  id                  String      @id @default(uuid()) @db.Uuid
+  userId              String      @db.Uuid
+  name                String      @db.VarChar(60)
+  type                AccountType
+  currency            String      @default("INR") @db.Char(3)
+  /// May be negative (e.g. a credit card that already carries a balance owed).
+  openingBalanceMinor BigInt      @default(0)
+  isDefault           Boolean     @default(false)
+  isArchived          Boolean     @default(false)
+  createdAt           DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime    @updatedAt @db.Timestamptz(3)
 
-  @@index([ownerId, incurredAt])
-  @@index([groupId, incurredAt])
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outgoingTransactions Transaction[] @relation("TransactionSourceAccount")
+  incomingTransactions Transaction[] @relation("TransactionDestinationAccount")
+
+  @@index([userId, isArchived])
+}
+
+model Category {
+  id         String       @id @default(uuid()) @db.Uuid
+  /// NULL for system categories, which every user can see but nobody can edit.
+  userId     String?      @db.Uuid
+  /// Stable identifier for system categories (e.g. "expense.food_dining").
+  systemKey  String?      @unique @db.VarChar(64)
+  name       String       @db.VarChar(40)
+  type       CategoryType
+  icon       String?      @db.VarChar(40)
+  color      String?      @db.VarChar(9)
+  isSystem   Boolean      @default(false)
+  isArchived Boolean      @default(false)
+  sortOrder  Int          @default(0)
+  createdAt  DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime     @updatedAt @db.Timestamptz(3)
+
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@index([userId, type])
+}
+
+model Transaction {
+  id                   String               @id @default(uuid()) @db.Uuid
+  userId               String               @db.Uuid
+  type                 TransactionType
+  amountMinor          BigInt
+  /// Copied from the account(s) at write time; never supplied by the client.
+  currency             String               @db.Char(3)
+  categoryId           String?              @db.Uuid
+  sourceAccountId      String?              @db.Uuid
+  destinationAccountId String?              @db.Uuid
+  /// ADJUSTMENT only. INCREASE credits destinationAccountId, DECREASE debits sourceAccountId.
+  adjustmentDirection  AdjustmentDirection?
+  paymentMethod        PaymentMethod?
+  occurredAt           DateTime             @db.Timestamptz(3)
+  payee                String?              @db.VarChar(120)
+  note                 String?              @db.VarChar(500)
+  /// REFUND only: the EXPENSE being refunded.
+  relatedTransactionId String?              @db.Uuid
+  source               TransactionSource    @default(MANUAL)
+  clientTransactionId  String               @db.VarChar(64)
+  /// SHA-256 of the normalised create request, used to tell a retry from key reuse.
+  requestFingerprint   String               @db.Char(64)
+  createdAt            DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime             @updatedAt @db.Timestamptz(3)
+  deletedAt            DateTime?            @db.Timestamptz(3)
+
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // NoAction (checked at end of statement) rather than Restrict so that deleting
+  // a User can cascade through accounts, categories and transactions in one go.
+  category           Category?     @relation(fields: [categoryId], references: [id], onDelete: NoAction)
+  sourceAccount      Account?      @relation("TransactionSourceAccount", fields: [sourceAccountId], references: [id], onDelete: NoAction)
+  destinationAccount Account?      @relation("TransactionDestinationAccount", fields: [destinationAccountId], references: [id], onDelete: NoAction)
+  relatedTransaction Transaction?  @relation("RefundOf", fields: [relatedTransactionId], references: [id], onDelete: NoAction)
+  refunds            Transaction[] @relation("RefundOf")
+
+  /// Idempotency: one financial record per client-generated id per user.
+  @@unique([userId, clientTransactionId])
+  /// History list (NEWEST/OLDEST keyset), recent, date-range summaries.
+  @@index([userId, occurredAt(sort: Desc), id(sort: Desc)])
+  /// Totals by type over a date range.
+  @@index([userId, type, occurredAt])
+  /// Category filter and per-category breakdown.
+  @@index([userId, categoryId, occurredAt])
+  /// Account filter and account balance aggregation.
+  @@index([userId, sourceAccountId, occurredAt])
+  @@index([userId, destinationAccountId, occurredAt])
+  /// Refund-total lookups for an expense.
+  @@index([relatedTransactionId])
 }

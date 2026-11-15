@@ -5,6 +5,8 @@ export interface AuthenticatedPrincipal {
   sessionId: string;
   email: string;
   displayName: string;
+  /** IANA zone used for every calendar computation on this user's data. */
+  timezone: string;
 }
 
 export const CurrentUser = createParamDecorator(

@@ -3,8 +3,8 @@ import { GroupRole, UserStatus } from '@prisma/client';
 import { extractClientIp } from '../common/guards/ip-throttler.guard';
 import { redactMetadata } from '../common/logging/security-logger.service';
 import { validateEnvironment } from '../config/env.validation';
-import { ResourceAuthorizationService } from '../finance/authorization.service';
-import { FinanceController } from '../finance/finance.controller';
+import { GroupAuthorizationService } from '../groups/group-authorization.service';
+import { GroupsController } from '../groups/groups.controller';
 import { buildPooledDatabaseUrl, PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from './crypto.service';
 import { MailService } from './mail.service';
@@ -301,14 +301,13 @@ describe('CryptoService, Redaction, Authorization & Environment Validation (Unit
           createdAt: new Date(),
         },
       }),
-    } as unknown as ResourceAuthorizationService;
+    } as unknown as GroupAuthorizationService;
 
     const mockMailService = {
       sendGroupInvitationEmail: jest.fn().mockResolvedValue(undefined),
-      sendExpenseAddedEmail: jest.fn().mockResolvedValue(undefined),
     } as unknown as MailService;
 
-    const controller = new FinanceController(
+    const controller = new GroupsController(
       mockPrisma,
       mockAuthz,
       mockMailService,
@@ -322,6 +321,7 @@ describe('CryptoService, Redaction, Authorization & Environment Validation (Unit
           sessionId: 'sess-1',
           email: 'admin@artha.app',
           displayName: 'Admin',
+          timezone: 'Asia/Kolkata',
         },
         'group-1',
         { userId: 'target-user-id', role: GroupRole.OWNER },
@@ -336,6 +336,7 @@ describe('CryptoService, Redaction, Authorization & Environment Validation (Unit
           sessionId: 'sess-2',
           email: 'owner@artha.app',
           displayName: 'Owner',
+          timezone: 'Asia/Kolkata',
         },
         'group-1',
         { userId: 'owner-user-id', role: GroupRole.MEMBER },

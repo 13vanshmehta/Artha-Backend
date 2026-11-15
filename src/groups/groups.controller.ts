@@ -2,18 +2,16 @@ import {
   BadRequestException,
   Body,
   Controller,
-  Delete,
   ForbiddenException,
   Get,
   NotFoundException,
   Param,
   ParseUUIDPipe,
-  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { GroupRole, TransactionType, UserStatus } from '@prisma/client';
+import { GroupRole, UserStatus } from '@prisma/client';
 import {
   type AuthenticatedPrincipal,
   CurrentUser,
@@ -21,164 +19,21 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../auth/mail.service';
-import { ResourceAuthorizationService } from './authorization.service';
-import {
-  AddGroupMemberDto,
-  CreateExpenseDto,
-  CreateGroupDto,
-  UpdateExpenseDto,
-} from './dto/finance.dto';
+import { GroupAuthorizationService } from './group-authorization.service';
+import { AddGroupMemberDto, CreateGroupDto } from './dto/groups.dto';
 
-const MAX_EXPENSE_PAGE_SIZE = 200;
 const MAX_GROUP_PAGE_SIZE = 100;
 
-function roundCurrencyAmount(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-@ApiTags('Protected Expenses & Collaborative Groups')
+@ApiTags('Collaborative Groups')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller()
-export class FinanceController {
+export class GroupsController {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly authz: ResourceAuthorizationService,
+    private readonly authz: GroupAuthorizationService,
     private readonly mailService: MailService,
   ) {}
-
-  @Post('expenses')
-  @ApiOperation({
-    summary:
-      'Create an individual or group expense owned by the authenticated user',
-  })
-  async createExpense(
-    @CurrentUser() user: AuthenticatedPrincipal,
-    @Body() dto: CreateExpenseDto,
-  ) {
-    if (dto.groupId) {
-      await this.authz.assertGroupMembership(
-        user.userId,
-        dto.groupId,
-        GroupRole.MEMBER,
-      );
-    }
-
-    const expense = await this.prisma.expenseRecord.create({
-      data: {
-        ownerId: user.userId,
-        groupId: dto.groupId ?? null,
-        merchant: dto.merchant.trim(),
-        category: dto.category.trim(),
-        amount: roundCurrencyAmount(dto.amount),
-        type: dto.type ?? TransactionType.EXPENSE,
-        paymentMethod: dto.paymentMethod.trim(),
-        notes: dto.notes?.trim() ?? null,
-      },
-    });
-
-    if (dto.groupId) {
-      this.prisma.expenseGroupMember
-        .findMany({
-          where: { groupId: dto.groupId, userId: { not: user.userId } },
-          include: {
-            user: { select: { email: true, displayName: true } },
-            group: { select: { name: true, currency: true } },
-          },
-        })
-        .then((members) => {
-          for (const m of members) {
-            if (m.user?.email && m.group?.name) {
-              this.mailService
-                .sendExpenseAddedEmail({
-                  to: m.user.email,
-                  recipientName: m.user.displayName,
-                  groupName: m.group.name,
-                  addedByName: user.displayName || 'A group member',
-                  merchant: expense.merchant,
-                  category: expense.category,
-                  amount: expense.amount,
-                  currency: m.group.currency,
-                  notes: expense.notes ?? undefined,
-                })
-                .catch(() => {});
-            }
-          }
-        })
-        .catch(() => {});
-    }
-
-    return { expense };
-  }
-
-  @Get('expenses')
-  @ApiOperation({
-    summary:
-      'List personal expenses belonging strictly to the authenticated user',
-  })
-  async listMyExpenses(@CurrentUser() user: AuthenticatedPrincipal) {
-    const expenses = await this.prisma.expenseRecord.findMany({
-      where: { ownerId: user.userId },
-      orderBy: { incurredAt: 'desc' },
-      take: MAX_EXPENSE_PAGE_SIZE,
-    });
-    return { expenses };
-  }
-
-  @Get('expenses/:expenseId')
-  @ApiOperation({
-    summary:
-      'Get a single expense record (enforces ownership or group membership)',
-  })
-  async getExpense(
-    @CurrentUser() user: AuthenticatedPrincipal,
-    @Param('expenseId', new ParseUUIDPipe()) expenseId: string,
-  ) {
-    const expense = await this.authz.assertExpenseReadAccess(
-      user.userId,
-      expenseId,
-    );
-    return { expense };
-  }
-
-  @Patch('expenses/:expenseId')
-  @ApiOperation({
-    summary: 'Update an expense record (enforces ownership or group admin role)',
-  })
-  async updateExpense(
-    @CurrentUser() user: AuthenticatedPrincipal,
-    @Param('expenseId', new ParseUUIDPipe()) expenseId: string,
-    @Body() dto: UpdateExpenseDto,
-  ) {
-    await this.authz.assertExpenseWriteAccess(user.userId, expenseId);
-
-    const updated = await this.prisma.expenseRecord.update({
-      where: { id: expenseId },
-      data: {
-        ...(dto.merchant !== undefined ? { merchant: dto.merchant.trim() } : {}),
-        ...(dto.category !== undefined ? { category: dto.category.trim() } : {}),
-        ...(dto.amount !== undefined
-          ? { amount: roundCurrencyAmount(dto.amount) }
-          : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes.trim() } : {}),
-      },
-    });
-
-    return { expense: updated };
-  }
-
-  @Delete('expenses/:expenseId')
-  @ApiOperation({
-    summary: 'Delete an expense record (enforces ownership or group admin role)',
-  })
-  async deleteExpense(
-    @CurrentUser() user: AuthenticatedPrincipal,
-    @Param('expenseId', new ParseUUIDPipe()) expenseId: string,
-  ) {
-    await this.authz.assertExpenseWriteAccess(user.userId, expenseId);
-    await this.prisma.expenseRecord.delete({ where: { id: expenseId } });
-    return { message: 'Expense deleted successfully.', deletedId: expenseId };
-  }
 
   @Post('groups')
   @ApiOperation({
@@ -229,7 +84,7 @@ export class FinanceController {
 
   @Get('groups/:groupId')
   @ApiOperation({
-    summary: 'Get group details and expenses (requires group membership)',
+    summary: 'Get group details and members (requires group membership)',
   })
   async getGroup(
     @CurrentUser() user: AuthenticatedPrincipal,
@@ -245,10 +100,6 @@ export class FinanceController {
       where: { id: groupId },
       include: {
         members: true,
-        expenses: {
-          orderBy: { incurredAt: 'desc' },
-          take: MAX_EXPENSE_PAGE_SIZE,
-        },
       },
     });
 

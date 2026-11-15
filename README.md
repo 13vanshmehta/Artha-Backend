@@ -93,7 +93,9 @@ All routes are prefixed `/api/v1` (see `src/app.setup.ts`).
 
 **Security preferences** (`/users/me/security`) — GET/PATCH biometric, PIN, app-lock timeout, and reauth-requirement settings.
 
-**Finance** (`/expenses`, `/groups`) — CRUD for personal expenses and expense groups/members (`src/finance/`). This is an early foundation, not the full PE Tracker/Groups feature set.
+**Ledger / Personal Expense Tracker** (`/accounts`, `/categories`, `/transactions`, `/home`, `/summary`) — accounts, system + custom categories, the five transaction types (income, expense, transfer, refund, adjustment) with BIGINT minor-unit money, idempotent creates, soft delete, cursor pagination and timezone-aware analytics (`src/ledger/`). The API contract is [docs/API_CONTRACT.md](docs/API_CONTRACT.md).
+
+**Groups** (`/groups`) — collaborative groups and membership (`src/groups/`). Shared group expenses are not part of Phase 1.
 
 **Health** — `GET /health`, `/health/live`, `/health/ready`.
 

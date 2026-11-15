@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { CacheService } from '../common/cache/cache.service';
 import { SecurityLoggerService } from '../common/logging/security-logger.service';
 import { ValidatedEnvConfig } from '../config/env.validation';
+import { isValidTimeZone } from '../common/time/local-calendar';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from './crypto.service';
 import {
@@ -59,6 +60,7 @@ export interface SanitizedUser {
   email: string;
   phoneNumber?: string | null;
   avatarUrl?: string | null;
+  timezone: string;
   emailVerified: boolean;
   emailVerifiedAt: string | null;
   status: UserStatus;
@@ -2297,7 +2299,18 @@ export class AuthService {
     const updateData: {
       displayName?: string;
       phoneNumber?: string | null;
+      timezone?: string;
     } = {};
+
+    if (dto.timezone !== undefined) {
+      if (!isValidTimeZone(dto.timezone)) {
+        throw new BadRequestException({
+          errorCode: 'INVALID_TIMEZONE',
+          message: 'timezone must be an IANA time zone such as Asia/Kolkata.',
+        });
+      }
+      updateData.timezone = dto.timezone;
+    }
 
     if (dto.displayName) {
       const cleanName = dto.displayName.trim();
@@ -2331,6 +2344,7 @@ export class AuthService {
       userAgent: reqMeta.userAgent,
       metadata: {
         displayNameUpdated: Boolean(dto.displayName),
+        timezoneUpdated: dto.timezone !== undefined,
       },
     });
 
@@ -2805,11 +2819,12 @@ export class AuthService {
         }
       }
 
-      // Remove user's group memberships and personal non-group expenses
+      // Remove user's group memberships and erase their personal ledger.
+      // Transactions go first: they reference accounts and categories.
       await tx.expenseGroupMember.deleteMany({ where: { userId } });
-      await tx.expenseRecord.deleteMany({
-        where: { ownerId: userId, groupId: null },
-      });
+      await tx.transaction.deleteMany({ where: { userId } });
+      await tx.account.deleteMany({ where: { userId } });
+      await tx.category.deleteMany({ where: { userId } });
 
       // Remove linked OAuth identities and local security preferences
       await tx.authIdentity.deleteMany({ where: { userId } });
@@ -3407,6 +3422,7 @@ export class AuthService {
       email: user.email,
       phoneNumber: user.phoneNumber ?? null,
       avatarUrl: user.avatarUrl ?? null,
+      timezone: user.timezone,
       emailVerified: user.emailVerifiedAt !== null,
       emailVerifiedAt: user.emailVerifiedAt
         ? user.emailVerifiedAt.toISOString()

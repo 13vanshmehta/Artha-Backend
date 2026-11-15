@@ -100,7 +100,9 @@ describe('Artha Authentication & Authorization E2E Suite', () => {
     await prisma.passwordResetChallenge.deleteMany();
     await prisma.authIdentity.deleteMany();
     await prisma.userSecurityPreference.deleteMany();
-    await prisma.expenseRecord.deleteMany();
+    await prisma.transaction.deleteMany();
+    await prisma.account.deleteMany();
+    await prisma.category.deleteMany({ where: { isSystem: false } });
     await prisma.expenseGroupMember.deleteMany();
     await prisma.expenseGroup.deleteMany();
     await prisma.user.deleteMany();
@@ -1111,42 +1113,54 @@ describe('Artha Authentication & Authorization E2E Suite', () => {
 
     it('rejects unauthorized requests and blocks cross-user reads, updates, deletes, and group access', async () => {
       // Unauthenticated request rejected
-      await http().get('/api/v1/expenses').expect(401);
+      await http().get('/api/v1/transactions').expect(401);
 
       const alice = await registerAndVerify('alice@artha.app', 'Alice');
       const bob = await registerAndVerify('bob@artha.app', 'Bob');
 
-      // Alice creates a personal expense
+      // Alice records a personal expense from her default Cash account
+      const accountsRes = await http()
+        .get('/api/v1/accounts')
+        .set('Authorization', `Bearer ${alice.accessToken}`)
+        .expect(200);
+      const categoriesRes = await http()
+        .get('/api/v1/categories?type=EXPENSE')
+        .set('Authorization', `Bearer ${alice.accessToken}`)
+        .expect(200);
       const createExpRes = await http()
-        .post('/api/v1/expenses')
+        .post('/api/v1/transactions')
         .set('Authorization', `Bearer ${alice.accessToken}`)
         .send({
-          merchant: 'Swiggy',
-          category: 'Food',
-          amount: 540,
+          clientTransactionId: 'auth-suite-expense-1',
+          type: 'EXPENSE',
+          amountMinor: '54000',
+          occurredAt: new Date().toISOString(),
+          sourceAccountId: payload(accountsRes).accounts[0].id,
+          categoryId: payload(categoriesRes).categories[0].id,
           paymentMethod: 'UPI',
+          payee: 'Swiggy',
         })
         .expect(201);
 
-      const aliceExpenseId = payload(createExpRes).expense.id as string;
+      const aliceExpenseId = payload(createExpRes).transaction.id as string;
 
-      // Bob cannot read, update, or delete Alice's personal expense
+      // Bob cannot read, update, or delete Alice's transaction; it looks absent
       const bobRead = await http()
-        .get(`/api/v1/expenses/${aliceExpenseId}`)
+        .get(`/api/v1/transactions/${aliceExpenseId}`)
         .set('Authorization', `Bearer ${bob.accessToken}`)
-        .expect(403);
-      expect(payload(bobRead).errorCode).toBe('CROSS_USER_ACCESS_DENIED');
+        .expect(404);
+      expect(payload(bobRead).errorCode).toBe('TRANSACTION_NOT_FOUND');
 
       await http()
-        .patch(`/api/v1/expenses/${aliceExpenseId}`)
+        .patch(`/api/v1/transactions/${aliceExpenseId}`)
         .set('Authorization', `Bearer ${bob.accessToken}`)
-        .send({ amount: 10 })
-        .expect(403);
+        .send({ amountMinor: '1000' })
+        .expect(404);
 
       await http()
-        .delete(`/api/v1/expenses/${aliceExpenseId}`)
+        .delete(`/api/v1/transactions/${aliceExpenseId}`)
         .set('Authorization', `Bearer ${bob.accessToken}`)
-        .expect(403);
+        .expect(404);
 
       // Alice creates a collaborative group
       const groupRes = await http()

@@ -109,6 +109,7 @@ export class JwtAuthGuard implements CanActivate {
       sessionId: session.id,
       email: session.user.email,
       displayName: session.user.displayName,
+      timezone: session.user.timezone,
     };
 
     return true;

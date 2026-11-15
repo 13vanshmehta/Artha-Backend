@@ -320,6 +320,16 @@ export class UpdateProfileDto {
   @IsString()
   @IsOptional()
   phoneNumber?: string;
+
+  @ApiPropertyOptional({
+    example: 'Asia/Kolkata',
+    description: 'IANA time zone that defines "today", "this month", etc. for your data.',
+  })
+  @Transform(trimString)
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  timezone?: string;
 }
 
 export class DeleteAccountDto {

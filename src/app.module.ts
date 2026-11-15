@@ -9,7 +9,8 @@ import { CacheModule } from './common/cache/cache.module';
 import { IpAwareThrottlerGuard } from './common/guards/ip-throttler.guard';
 import { validateEnvironment } from './config/env.validation';
 import { EmailModule } from './email/email.module';
-import { FinanceModule } from './finance/finance.module';
+import { GroupsModule } from './groups/groups.module';
+import { LedgerModule } from './ledger/ledger.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -46,7 +47,8 @@ import { PrismaModule } from './prisma/prisma.module';
     CacheModule,
     EmailModule,
     AuthModule,
-    FinanceModule,
+    GroupsModule,
+    LedgerModule,
   ],
   controllers: [AppController],
   providers: [
