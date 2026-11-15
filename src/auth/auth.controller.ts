@@ -29,6 +29,7 @@ import {
 import {
   AppleOAuthDto,
   ChangePasswordDto,
+  ConfirmEmailChangeDto,
   ConfirmEmailVerificationDto,
   DeleteAccountDto,
   ForgotPasswordDto,
@@ -38,6 +39,7 @@ import {
   ReauthenticateDto,
   RefreshTokenDto,
   RegisterDto,
+  RequestEmailChangeDto,
   ResetPasswordDto,
   SendEmailVerificationDto,
   UpdateProfileDto,
@@ -182,6 +184,54 @@ export class AuthController {
       message: 'Profile updated successfully.',
       user: updatedUser,
     };
+  }
+
+  @Post('email/change/request')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({
+    summary:
+      'Request an email address change and dispatch a 6-digit OTP to the new address. Requires current password or a recent /auth/reauthenticate.',
+  })
+  @ApiResponse({ status: 200, description: 'Verification code dispatched to new email' })
+  @ApiResponse({ status: 401, description: 'Re-authentication required' })
+  @ApiResponse({ status: 409, description: 'Email already registered to another account' })
+  async requestEmailChange(
+    @CurrentUser() user: AuthenticatedPrincipal,
+    @Body() dto: RequestEmailChangeDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.requestEmailChange(
+      user.userId,
+      user.sessionId,
+      dto,
+      this.extractMeta(req),
+    );
+  }
+
+  @Post('email/change/confirm')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Confirm the 6-digit OTP and apply the pending email address change',
+  })
+  @ApiResponse({ status: 200, description: 'Email address updated' })
+  @ApiResponse({ status: 400, description: 'Invalid, expired, or consumed OTP' })
+  async confirmEmailChange(
+    @CurrentUser() user: AuthenticatedPrincipal,
+    @Body() dto: ConfirmEmailChangeDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.confirmEmailChange(
+      user.userId,
+      user.sessionId,
+      dto,
+      this.extractMeta(req),
+    );
   }
 
   @Post('oauth/google')
@@ -346,7 +396,32 @@ export class AuthController {
     @Param('sessionId', new ParseUUIDPipe()) sessionId: string,
     @Req() req: Request,
   ) {
+    const isSuspicious =
+      req.query?.isSuspicious === 'true' ||
+      Boolean((req.body as Record<string, unknown> | undefined)?.isSuspicious);
     return this.authService.revokeSession(
+      user.userId,
+      user.sessionId,
+      sessionId,
+      this.extractMeta(req),
+      isSuspicious,
+    );
+  }
+
+  @Post('sessions/:sessionId/report-suspicious')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Report an unknown or suspicious device session and immediately revoke it',
+  })
+  async reportSuspiciousSession(
+    @CurrentUser() user: AuthenticatedPrincipal,
+    @Param('sessionId', new ParseUUIDPipe()) sessionId: string,
+    @Req() req: Request,
+  ) {
+    return this.authService.reportSuspiciousSession(
       user.userId,
       user.sessionId,
       sessionId,
@@ -363,6 +438,25 @@ export class AuthController {
       'Revoke all active sessions except the current device session',
   })
   async revokeOtherSessions(
+    @CurrentUser() user: AuthenticatedPrincipal,
+    @Req() req: Request,
+  ) {
+    return this.authService.revokeOtherSessions(
+      user.userId,
+      user.sessionId,
+      this.extractMeta(req),
+    );
+  }
+
+  @Post('sessions/logout-others')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Alias: Revoke and logout all sessions except the current device session',
+  })
+  async logoutOtherSessions(
     @CurrentUser() user: AuthenticatedPrincipal,
     @Req() req: Request,
   ) {

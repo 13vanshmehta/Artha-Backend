@@ -19,10 +19,10 @@
     "test:cov": "node --env-file=.env.local --experimental-vm-modules ./node_modules/jest/bin/jest.js --coverage",
     "test:debug": "node --env-file=.env.local --inspect-brk --experimental-vm-modules -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "node --env-file=.env.local --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json",
-    "prisma:generate": "node --env-file=.env.development ./node_modules/prisma/build/index.js generate",
-    "prisma:migrate:dev": "node --env-file=.env.development ./node_modules/prisma/build/index.js migrate dev",
+    "prisma:generate": "node --env-file=.env.local ./node_modules/prisma/build/index.js generate",
+    "prisma:migrate:dev": "node --env-file=.env.local ./node_modules/prisma/build/index.js migrate dev",
     "prisma:migrate:deploy": "node --env-file=.env.production ./node_modules/prisma/build/index.js migrate deploy",
-    "prisma:validate": "node --env-file=.env.development ./node_modules/prisma/build/index.js validate"
+    "prisma:validate": "node --env-file=.env.local ./node_modules/prisma/build/index.js validate"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",
@@ -36,6 +36,7 @@
     "argon2": "^0.45.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "express": "^5.3.0",
     "google-auth-library": "^11.1.0",
     "jose": "^6.2.12",
     "nodemailer": "^10.0.12",

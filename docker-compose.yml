@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # ==============================================================================
+  # PostgreSQL 16 — Primary Persistence Tier
+  # ==============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: artha-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: artha_user
+      POSTGRES_PASSWORD: artha_secure_password_dev_2026
+      POSTGRES_DB: artha_dev
+    ports:
+      - '5432:5432'
+    volumes:
+      - artha_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U artha_user -d artha_dev']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # Redis 7 — Cache, Rate Limiting & Background Job Queue
+  # ==============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: artha-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - artha_redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==============================================================================
+  # Artha NestJS Backend Monolith
+  # ==============================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: artha-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: 'postgresql://artha_user:artha_secure_password_dev_2026@postgres:5432/artha_dev?schema=public'
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - '3000:3000'
+
+volumes:
+  artha_pgdata:
+  artha_redisdata:

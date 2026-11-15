@@ -12,6 +12,8 @@ export interface ValidatedEnvConfig {
   JWT_ACCESS_TTL_SECONDS: number;
   JWT_SIGNING_SECRET: string;
   REFRESH_TOKEN_TTL_DAYS: number;
+  /** Seconds a just-consumed refresh token may be retried after a lost response (0 disables). */
+  REFRESH_TOKEN_REUSE_GRACE_SECONDS: number;
   SESSION_ABSOLUTE_TTL_DAYS: number;
   REAUTH_WINDOW_SECONDS: number;
   OTP_EXPIRY_MINUTES: number;
@@ -57,14 +59,13 @@ export function validateEnvironment(
 
   const isProd = NODE_ENV === 'production';
 
+  // In test mode never fall back to DATABASE_URL: the e2e suite wipes every table,
+  // and DATABASE_URL is the developer's (or production's) real database.
   const databaseUrl =
     NODE_ENV === 'test'
       ? readString(
           rawEnv.TEST_DATABASE_URL,
-          readString(
-            rawEnv.DATABASE_URL,
-            'postgresql://artha:artha@localhost:5432/artha_test?schema=public',
-          ),
+          'postgresql://artha:artha@localhost:5432/artha_test?schema=public',
         )
       : readString(
           rawEnv.DATABASE_URL,
@@ -161,6 +162,22 @@ export function validateEnvironment(
     return parsed;
   };
 
+  const parseBoundedNonNegativeInt = (
+    val: unknown,
+    fallback: number,
+    max: number,
+    name: string,
+  ): number => {
+    if (val === undefined || val === null || val === '') return fallback;
+    const parsed = Number(val);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
+      throw new Error(
+        `Invalid configuration: ${name} must be an integer between 0 and ${max}.`,
+      );
+    }
+    return parsed;
+  };
+
   const parseCsv = (val: unknown, fallback: string[] = []): string[] => {
     if (!val || typeof val !== 'string') return fallback;
     return val
@@ -206,6 +223,12 @@ export function validateEnvironment(
       rawEnv.REFRESH_TOKEN_TTL_DAYS,
       30,
       'REFRESH_TOKEN_TTL_DAYS',
+    ),
+    REFRESH_TOKEN_REUSE_GRACE_SECONDS: parseBoundedNonNegativeInt(
+      rawEnv.REFRESH_TOKEN_REUSE_GRACE_SECONDS,
+      20,
+      120,
+      'REFRESH_TOKEN_REUSE_GRACE_SECONDS',
     ),
     SESSION_ABSOLUTE_TTL_DAYS: parsePositiveInt(
       rawEnv.SESSION_ABSOLUTE_TTL_DAYS,

@@ -81,6 +81,29 @@ describe('CryptoService, Redaction, Authorization & Environment Validation (Unit
     return u.toString();
   }
 
+  it('never resolves the test database to DATABASE_URL (BE-23)', () => {
+    const cfg = validateEnvironment({
+      NODE_ENV: 'test',
+      DATABASE_URL: makeMockDatabaseUrl(),
+    });
+    expect(cfg.DATABASE_URL).not.toBe(makeMockDatabaseUrl());
+    expect(cfg.DATABASE_URL).toContain('artha_test');
+  });
+
+  it('bounds REFRESH_TOKEN_REUSE_GRACE_SECONDS to 0..120 with a default of 20', () => {
+    expect(validateEnvironment({}).REFRESH_TOKEN_REUSE_GRACE_SECONDS).toBe(20);
+    expect(
+      validateEnvironment({ REFRESH_TOKEN_REUSE_GRACE_SECONDS: '0' })
+        .REFRESH_TOKEN_REUSE_GRACE_SECONDS,
+    ).toBe(0);
+    expect(() =>
+      validateEnvironment({ REFRESH_TOKEN_REUSE_GRACE_SECONDS: '121' }),
+    ).toThrow(/between 0 and 120/);
+    expect(() =>
+      validateEnvironment({ REFRESH_TOKEN_REUSE_GRACE_SECONDS: '-1' }),
+    ).toThrow(/between 0 and 120/);
+  });
+
   it('rejects missing or placeholder secrets in production environment validation', () => {
     expect(() =>
       validateEnvironment({
@@ -175,28 +198,71 @@ describe('CryptoService, Redaction, Authorization & Environment Validation (Unit
     ]);
   });
 
-  it('prevents X-Forwarded-For spoofing in production unless TRUST_PROXY=true', () => {
+  it('never lets the client choose its own IP via X-Forwarded-For (BE-03)', () => {
     const prevEnv = process.env.NODE_ENV;
     const prevProxy = process.env.TRUST_PROXY;
+    const restore = (key: 'NODE_ENV' | 'TRUST_PROXY', val?: string) => {
+      if (val === undefined) delete process.env[key];
+      else process.env[key] = val;
+    };
     try {
       process.env.NODE_ENV = 'production';
+
+      // No proxy configured: the header is ignored entirely.
       delete process.env.TRUST_PROXY;
+      expect(
+        extractClientIp({
+          headers: { 'x-forwarded-for': '203.0.113.99' },
+          ip: '198.51.100.42',
+        }),
+      ).toBe('198.51.100.42');
 
-      const ipUntrusted = extractClientIp({
-        headers: { 'x-forwarded-for': '203.0.113.99' },
-        ip: '198.51.100.42',
-      });
-      expect(ipUntrusted).toBe('198.51.100.42');
+      // One trusted load balancer: it appended the real client (rightmost).
+      // The forged leftmost value must be ignored.
+      process.env.TRUST_PROXY = '1';
+      expect(
+        extractClientIp({
+          headers: { 'x-forwarded-for': '203.0.113.99, 192.0.2.7' },
+          ip: '10.0.0.1',
+        }),
+      ).toBe('192.0.2.7');
 
+      // Legacy "true" means one hop, never "trust everything".
       process.env.TRUST_PROXY = 'true';
-      const ipTrusted = extractClientIp({
-        headers: { 'x-forwarded-for': '203.0.113.99, 10.0.0.1' },
-        ip: '198.51.100.42',
-      });
-      expect(ipTrusted).toBe('203.0.113.99');
+      expect(
+        extractClientIp({
+          headers: { 'x-forwarded-for': '1.1.1.1, 2.2.2.2, 192.0.2.7' },
+          ip: '10.0.0.1',
+        }),
+      ).toBe('192.0.2.7');
+
+      // Two hops (CDN + load balancer): the second entry from the right.
+      process.env.TRUST_PROXY = '2';
+      expect(
+        extractClientIp({
+          headers: { 'x-forwarded-for': '1.1.1.1, 192.0.2.7, 172.16.0.5' },
+          ip: '10.0.0.1',
+        }),
+      ).toBe('192.0.2.7');
+
+      // Garbage or a too-short chain falls back to the socket address.
+      process.env.TRUST_PROXY = '1';
+      expect(
+        extractClientIp({
+          headers: { 'x-forwarded-for': 'not-an-ip' },
+          ip: '10.0.0.1',
+        }),
+      ).toBe('10.0.0.1');
+      process.env.TRUST_PROXY = '3';
+      expect(
+        extractClientIp({
+          headers: { 'x-forwarded-for': '192.0.2.7' },
+          ip: '10.0.0.1',
+        }),
+      ).toBe('10.0.0.1');
     } finally {
-      process.env.NODE_ENV = prevEnv;
-      process.env.TRUST_PROXY = prevProxy;
+      restore('NODE_ENV', prevEnv);
+      restore('TRUST_PROXY', prevProxy);
     }
   });
 

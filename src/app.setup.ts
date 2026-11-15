@@ -9,6 +9,9 @@ import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { json, NextFunction, Request, Response, urlencoded } from 'express';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { resolveTrustedProxyHops } from './common/guards/ip-throttler.guard';
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { ValidatedEnvConfig } from './config/env.validation';
 
 const MAX_REQUEST_BODY_SIZE = '100kb';
@@ -21,7 +24,17 @@ export function configureArthaApp(app: INestApplication): void {
   if (httpAdapter && typeof httpAdapter.disable === 'function') {
     httpAdapter.disable('x-powered-by');
   }
+  // Keep Express's own req.ip consistent with extractClientIp (BE-03): trust
+  // exactly the configured number of proxy hops, never the whole header.
+  if (httpAdapter && typeof httpAdapter.set === 'function') {
+    httpAdapter.set('trust proxy', resolveTrustedProxyHops());
+  }
 
+  // Correlation ID tracing & express body parsing
+  const correlationMiddleware = new CorrelationIdMiddleware();
+  app.use((req: Request, res: Response, next: NextFunction) =>
+    correlationMiddleware.use(req, res, next),
+  );
   app.use(json({ limit: MAX_REQUEST_BODY_SIZE }));
   app.use(urlencoded({ extended: true, limit: MAX_REQUEST_BODY_SIZE }));
 
@@ -41,12 +54,32 @@ export function configureArthaApp(app: INestApplication): void {
   });
 
   app.setGlobalPrefix('api/v1', {
-    exclude: [{ path: '/', method: RequestMethod.GET }],
+    exclude: [
+      { path: '/', method: RequestMethod.GET },
+      { path: '/health', method: RequestMethod.GET },
+      { path: '/health/live', method: RequestMethod.GET },
+      { path: '/health/ready', method: RequestMethod.GET },
+    ],
   });
 
   const corsOrigins = configService.get('CORS_ORIGINS', { infer: true });
   app.enableCors({
-    origin: corsOrigins && corsOrigins.length > 0 ? corsOrigins : false,
+    origin: (
+      requestOrigin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
+      // Allow native mobile clients, curl, or server-to-server requests without Origin header
+      if (!requestOrigin) return callback(null, true);
+      if (
+        !corsOrigins ||
+        corsOrigins.length === 0 ||
+        corsOrigins.includes(requestOrigin) ||
+        nodeEnv !== 'production'
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     credentials: true,
@@ -73,6 +106,7 @@ export function configureArthaApp(app: INestApplication): void {
   );
 
   app.useGlobalFilters(new AllExceptionsFilter());
+  app.useGlobalInterceptors(new TransformInterceptor());
 
   if (nodeEnv !== 'production') {
     const swaggerConfig = new DocumentBuilder()
