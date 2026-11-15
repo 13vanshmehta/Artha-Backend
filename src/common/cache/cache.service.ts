@@ -74,6 +74,11 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
     return val !== null;
   }
 
+  /** Drops every entry (used to isolate tests). */
+  async clear(): Promise<void> {
+    this.memoryStore.clear();
+  }
+
   isRedisConnected(): boolean {
     return this.isRedisActive;
   }

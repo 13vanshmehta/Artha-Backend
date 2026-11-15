@@ -189,7 +189,7 @@ export function renderPasswordResetTemplate(
   config: EmailSystemConfig,
 ): RenderedEmail {
   const subject = 'Reset your Artha password';
-  const preheader = `Reset token expires in ${data.expiresInMinutes} minutes.`;
+  const preheader = `Your reset code expires in ${data.expiresInMinutes} minutes.`;
   const resetUrl = data.resetUrl;
 
   const contentHtml = `
@@ -201,7 +201,7 @@ export function renderPasswordResetTemplate(
       Hi ${escapeHtml(data.displayName)},
     </p>
     <p style="margin: 0 0 16px 0;">
-      We received a request to reset the password for your Artha account. Use the secure single-use token below in the Artha app to choose a new password:
+      We received a request to reset the password for your Artha account. Enter the 6-digit code below in the Artha app to choose a new password:
     </p>
 
     ${renderOtpBox(
@@ -228,8 +228,8 @@ export function renderPasswordResetTemplate(
     `Hi ${data.displayName},`,
     '',
     'We received a request to reset your Artha account password.',
-    `Your single-use password reset token is: ${data.resetToken}`,
-    `This token expires in ${data.expiresInMinutes} minutes.`,
+    `Your password reset code is: ${data.resetToken}`,
+    `This code expires in ${data.expiresInMinutes} minutes and can be used once.`,
     '',
     resetUrl ? `Or visit: ${resetUrl}\n\n` : '',
     'If you did not request a password reset, no action is needed. Your password remains unchanged.',

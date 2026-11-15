@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { json, NextFunction, Request, Response, urlencoded } from 'express';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { resolveTrustedProxyHops } from './common/guards/ip-throttler.guard';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { ValidatedEnvConfig } from './config/env.validation';
@@ -22,6 +23,11 @@ export function configureArthaApp(app: INestApplication): void {
   const httpAdapter = app.getHttpAdapter().getInstance();
   if (httpAdapter && typeof httpAdapter.disable === 'function') {
     httpAdapter.disable('x-powered-by');
+  }
+  // Keep Express's own req.ip consistent with extractClientIp (BE-03): trust
+  // exactly the configured number of proxy hops, never the whole header.
+  if (httpAdapter && typeof httpAdapter.set === 'function') {
+    httpAdapter.set('trust proxy', resolveTrustedProxyHops());
   }
 
   // Correlation ID tracing & express body parsing

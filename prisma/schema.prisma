@@ -21,11 +21,6 @@ enum AuthProvider {
   APPLE
 }
 
-enum AuthChallengeType {
-  EMAIL_VERIFICATION
-  PASSWORD_RESET
-}
-
 enum GroupRole {
   OWNER
   ADMIN
@@ -35,6 +30,13 @@ enum GroupRole {
 enum TransactionType {
   EXPENSE
   INCOME
+}
+
+/// What an emailed verification code is allowed to do. Sign-up codes and
+/// email-change codes share one table, so every lookup filters on this (BE-08).
+enum EmailChallengePurpose {
+  SIGNUP_VERIFICATION
+  EMAIL_CHANGE
 }
 
 model User {
@@ -54,7 +56,6 @@ model User {
 
   identities                  AuthIdentity[]
   sessions                    AuthSession[]
-  challenges                  AuthChallenge[]
   emailVerificationChallenges EmailVerificationChallenge[]
   passwordResetChallenges     PasswordResetChallenge[]
   securityEvents              SecurityEvent[]
@@ -143,46 +144,36 @@ model RefreshToken {
   @@index([expiresAt])
 }
 
-model AuthChallenge {
-  id         String            @id @default(uuid()) @db.Uuid
-  userId     String            @db.Uuid
-  type       AuthChallengeType
-  tokenHash  String
-  expiresAt  DateTime
-  consumedAt DateTime?
-  createdAt  DateTime          @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, type, consumedAt])
-  @@index([expiresAt])
-}
-
 model EmailVerificationChallenge {
   id                String    @id @default(uuid()) @db.Uuid
-  userId            String    @db.Uuid
+  userId            String                @db.Uuid
+  purpose           EmailChallengePurpose @default(SIGNUP_VERIFICATION)
   email             String
   otpHash           String
   expiresAt         DateTime
-  failedAttempts    Int       @default(0)
-  maxAttempts       Int       @default(5)
+  failedAttempts    Int                   @default(0)
+  maxAttempts       Int                   @default(5)
   resendAvailableAt DateTime
   consumedAt        DateTime?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime              @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, consumedAt])
+  @@index([userId, purpose, consumedAt])
   @@index([expiresAt])
 }
 
 model PasswordResetChallenge {
-  id         String    @id @default(uuid()) @db.Uuid
-  userId     String    @db.Uuid
-  tokenHash  String    @unique
-  expiresAt  DateTime
-  consumedAt DateTime?
-  createdAt  DateTime  @default(now())
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @db.Uuid
+  /// Argon2id hash of the emailed 6-digit reset code (salted, so looked up by user, not by hash).
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  failedAttempts Int       @default(0)
+  maxAttempts    Int       @default(5)
+  consumedAt     DateTime?
+  createdAt      DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

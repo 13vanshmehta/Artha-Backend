@@ -1,124 +1,117 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Artha Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+NestJS + Prisma + PostgreSQL API powering the Artha personal finance app. Authentication, session management, and account security are production-grade and implemented from scratch — this is not a starter template.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 1. Architecture
 
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ pnpm install
+```
+React Native (frontend/)
+        │  HTTPS + JWT bearer
+        ▼
+   NestJS API (this repo)
+        │
+        ▼
+   Prisma ORM
+        │
+        ▼
+   PostgreSQL (Aiven, TLS)
 ```
 
-## Compile and run the project
+- **Framework**: NestJS 12, TypeScript, class-validator DTOs on every route.
+- **ORM / DB**: Prisma Client against PostgreSQL (Aiven-hosted, `sslmode=require`).
+- **Password/PIN hashing**: Argon2id (`src/auth/crypto.service.ts`).
+- **Validation & errors**: global `ValidationPipe` + `AllExceptionsFilter` (`src/common/filters/`) returning a consistent `{ errorCode, message, details }` shape, with a correlation ID attached to every request/response and log line.
+- **Email**: branded HTML/text transactional templates (`src/email/`), sent via SMTP (`EMAIL_PROVIDER=smtp`) or logged to a local outbox in dev (`local-outbox`, rejected if `NODE_ENV=production`).
+- **In-memory infra (dev-stage only)**: `CacheService` and `QueueService` (`src/common/cache/`, `src/infrastructure/queue/`) are process-local stand-ins — not Redis/BullMQ. Fine for current single-instance scale; swap for Redis + BullMQ before running multiple API instances or relying on queued jobs.
+
+## 2. Authentication & Session Model
+
+- **Password/PIN storage**: Argon2id, never reversible, never logged.
+- **Access tokens**: short-lived JWT (`JWT_ACCESS_TTL_SECONDS`, default 900s), signed with `JWT_SIGNING_SECRET`, scoped with `JWT_ISSUER` / `JWT_AUDIENCE`.
+- **Sessions**: every login creates an `AuthSession` row (device name, platform, IP, user agent, `lastReauthenticatedAt`, `expiresAt`, revocation fields). Access tokens are validated against the live session, not just the JWT signature — a revoked session is immediately rejected even if the JWT hasn't expired yet.
+- **Refresh tokens**: stored hashed (`RefreshToken.tokenHash`), rotated on every use (old token is consumed and linked via `replacedByTokenId`), grouped by `familyId`. Reusing an already-consumed refresh token is treated as compromise and revokes the whole token family.
+- **OTP verification**: 6-digit codes, hashed at rest, rate-limited resend, bounded failed-attempt counter (`EmailVerificationChallenge`). Used for registration email verification and email-change verification.
+- **OAuth**: Google (ID token verified server-side via `google-auth-library` against `GOOGLE_OAUTH_CLIENT_IDS`) and Apple (identity token verified against `APPLE_CLIENT_IDS`) sign-in, with identity linking/unlinking (`AuthIdentity`) separate from the primary email/password identity.
+- **Re-authentication for sensitive actions**: a session tracks `lastReauthenticatedAt`. Changing password, changing email, or deleting the account all require either the current password inline or a recent call to `POST /auth/re-authenticate` (window: `REAUTH_WINDOW_SECONDS`).
+- **Email change**: does **not** replace the email immediately. `POST /auth/email/change/request` (requires recent re-auth) sends an OTP to the *new* address; the old email stays active and verified until `POST /auth/email/change/confirm` validates the OTP. On success the change is atomic, a `SecurityEvent` is logged, every other session is revoked, and both the old and new addresses are notified.
+- **Security event logging**: every sensitive action (login, logout, password/email change, OAuth link/unlink, session revocation, reauth failures, etc.) is recorded in `SecurityEvent` with IP/user agent/metadata for audit and abuse detection.
+
+## 3. Environment Variables
+
+See [`.env.example`](.env.example) for the full annotated list. Key groups:
+
+| Group | Variables |
+| :--- | :--- |
+| Server | `NODE_ENV`, `PORT`, `CORS_ORIGINS` |
+| Database | `DATABASE_URL`, `TEST_DATABASE_URL`, `DATABASE_CONNECTION_LIMIT`, `DATABASE_POOL_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_SSL_CA_PATH` |
+| JWT / Sessions | `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_ACCESS_TTL_SECONDS`, `JWT_SIGNING_SECRET`, `REFRESH_TOKEN_TTL_DAYS`, `SESSION_ABSOLUTE_TTL_DAYS`, `REAUTH_WINDOW_SECONDS` |
+| OTP / Password policy | `OTP_EXPIRY_MINUTES`, `OTP_MAX_ATTEMPTS`, `OTP_RESEND_COOLDOWN_SECONDS`, `PASSWORD_MIN_LENGTH`, `PASSWORD_RESET_TTL_MINUTES` |
+| Email | `EMAIL_PROVIDER`, `EMAIL_FROM`, `APP_NAME`, `APP_URL`, `SUPPORT_EMAIL`, `EMAIL_LOGO_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `ARTHA_EMAIL_ID` / `ARTHA_EMAIL_APP_PASSWORD` (or `SMTP_USER` / `SMTP_PASS`) |
+| OAuth | `GOOGLE_WEB_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_IDS`, `APPLE_CLIENT_IDS` |
+
+Copy `.env.example` to `.env.local` (used by `pnpm test` / `pnpm start:dev`) and fill in real values. **Never commit `.env`, `.env.local`, or `.env.production`.**
+
+## 4. Database Setup
 
 ```bash
-# development
-$ pnpm run start
+pnpm install
 
-# watch mode
-$ pnpm run start:dev
+# generate Prisma client
+pnpm prisma:generate
 
-# production mode
-$ pnpm run start:prod
+# apply migrations to DATABASE_URL
+pnpm prisma:migrate:dev
 ```
 
-## Run tests
+The project targets a managed PostgreSQL instance (Aiven) over TLS. `docker-compose.yml` at the repo root is available for a local Postgres instance during development if you don't want to depend on a hosted DB.
+
+## 5. API Endpoints
+
+All routes are prefixed `/api/v1` (see `src/app.setup.ts`).
+
+**Auth** (`/auth`)
+| Method | Path | Notes |
+| :--- | :--- | :--- |
+| POST | `register` | Create account, triggers OTP email verification |
+| POST | `email/verification/send` / `email/verification/confirm` | Registration OTP flow |
+| POST | `login` | Email/password login |
+| POST | `password/forgot` / `password/reset` | Password reset via emailed token |
+| POST | `password/change` | Requires current password or recent re-auth |
+| GET / PATCH | `me` | Profile |
+| POST | `email/change/request` / `email/change/confirm` | OTP-verified email change (see §2); request requires recent re-auth |
+| POST | `oauth/google` / `oauth/apple` | OAuth sign-in |
+| POST | `oauth/link/google` / `oauth/link/apple` | Link identity to existing account |
+| DELETE | `oauth/:provider` | Unlink identity |
+| POST | `token/refresh` | Rotates refresh token |
+| POST | `logout` / `logout-all` | Revoke current / all sessions |
+| GET | `sessions` | List active sessions for the user |
+| DELETE | `sessions/:sessionId` | Revoke one session |
+| POST | `sessions/:sessionId/report-suspicious` | Flag + revoke a session as "this wasn't me" |
+| POST | `sessions/revoke-others` / `sessions/logout-others` | Revoke every session but the current one |
+| POST | `re-authenticate` | Re-confirm password/PIN to open the sensitive-action window |
+| POST | `account/delete` | Requires recent re-auth |
+
+**Security preferences** (`/users/me/security`) — GET/PATCH biometric, PIN, app-lock timeout, and reauth-requirement settings.
+
+**Finance** (`/expenses`, `/groups`) — CRUD for personal expenses and expense groups/members (`src/finance/`). This is an early foundation, not the full PE Tracker/Groups feature set.
+
+**Health** — `GET /health`, `/health/live`, `/health/ready`.
+
+Full request/response shapes are documented via Swagger (`@nestjs/swagger` decorators on every route) — run the app and check the configured docs path.
+
+## 6. Testing
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+pnpm test        # unit tests (Jest)
+pnpm test:cov     # unit tests with coverage
+pnpm test:e2e     # e2e tests against TEST_DATABASE_URL (test/*.e2e-spec.ts)
 ```
 
-## Deployment
+`test/auth.e2e-spec.ts` covers the core auth/session lifecycle end-to-end against a real database schema. Known gap (see root README): no e2e coverage yet for delete-account, logout-all, revoke-other-sessions, or the email-change flow added in this pass.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## 7. Security Decisions Worth Knowing
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-To add it to this project:
-
-```bash
-$ pnpm install @nestjs/observe
-```
-
-Then follow the [setup guide](https://docs.nestjs.com/observability/overview) - it takes a single import and an app key.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- Access tokens are re-validated against the database session on every request — a revoked session is dead immediately, not just at JWT expiry.
+- Refresh token reuse (replay of an already-rotated token) revokes the entire token family, not just that token.
+- Changing email never silently takes over an account: the new address must prove ownership via OTP before anything changes, the old address stays valid until confirmation, and every other session is revoked once the change lands.
+- `AuthChallenge` (model + `AuthChallengeType` enum) appears superseded by the dedicated `EmailVerificationChallenge` / `PasswordResetChallenge` models — flagged for removal pending a dependency check, not yet removed.

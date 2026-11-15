@@ -10,7 +10,6 @@ import { IpAwareThrottlerGuard } from './common/guards/ip-throttler.guard';
 import { validateEnvironment } from './config/env.validation';
 import { EmailModule } from './email/email.module';
 import { FinanceModule } from './finance/finance.module';
-import { QueueModule } from './infrastructure/queue/queue.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -27,7 +26,13 @@ import { PrismaModule } from './prisma/prisma.module';
       // this, a stale `export DATABASE_URL=...` left in the developer's shell silently
       // shadows .env.local and the app boots pointed at the wrong database. In
       // production the opposite is correct: platform-injected variables must win.
-      override: process.env.NODE_ENV !== 'production',
+      // Tests are the same: the runner sets NODE_ENV=test, EMAIL_PROVIDER and the
+      // test database before boot, and .env.local (NODE_ENV=development, real SMTP,
+      // the dev DATABASE_URL) must never override those — doing so once pointed the
+      // destructive e2e suite at the developer's own database.
+      override:
+        process.env.NODE_ENV !== 'production' &&
+        process.env.NODE_ENV !== 'test',
       validate: validateEnvironment,
     }),
     ThrottlerModule.forRoot([
@@ -39,7 +44,6 @@ import { PrismaModule } from './prisma/prisma.module';
     ]),
     PrismaModule,
     CacheModule,
-    QueueModule,
     EmailModule,
     AuthModule,
     FinanceModule,

@@ -38,7 +38,6 @@ describe('Aiven PostgreSQL Connectivity & Schema Verification (Read-Only)', () =
     expect(tableNames).toEqual(
       expect.arrayContaining([
         '_prisma_migrations',
-        'AuthChallenge',
         'AuthIdentity',
         'AuthSession',
         'EmailVerificationChallenge',
@@ -70,8 +69,6 @@ describe('Aiven PostgreSQL Connectivity & Schema Verification (Read-Only)', () =
         'AuthIdentity_provider_providerSubject_key',
         'AuthSession_userId_revokedAt_idx',
         'AuthSession_expiresAt_idx',
-        'AuthChallenge_userId_type_consumedAt_idx',
-        'AuthChallenge_expiresAt_idx',
         'SecurityEvent_userId_createdAt_idx',
         'SecurityEvent_eventType_createdAt_idx',
       ]),
@@ -92,7 +89,6 @@ describe('Aiven PostgreSQL Connectivity & Schema Verification (Read-Only)', () =
       expect.arrayContaining([
         'AuthIdentity_userId_fkey',
         'AuthSession_userId_fkey',
-        'AuthChallenge_userId_fkey',
         'EmailVerificationChallenge_userId_fkey',
         'PasswordResetChallenge_userId_fkey',
         'SecurityEvent_userId_fkey',

@@ -83,6 +83,16 @@ export class ConfirmEmailVerificationDto extends DeviceContextDto {
   @Length(6, 6)
   @Matches(/^\d{6}$/, { message: 'OTP code must be exactly 6 digits.' })
   code!: string;
+
+  @ApiProperty({
+    example: 'StrongPass#2026',
+    description:
+      'Account password. For an unverified account this becomes the password, so only the person who receives the code decides it (prevents account pre-hijacking).',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  password!: string;
 }
 
 export class RequestEmailChangeDto {
@@ -91,6 +101,15 @@ export class RequestEmailChangeDto {
   @IsEmail()
   @MaxLength(254)
   newEmail!: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Current password (required unless session was recently re-authenticated)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  currentPassword?: string;
 }
 
 export class ConfirmEmailChangeDto {
@@ -131,12 +150,13 @@ export class ResetPasswordDto {
   @MaxLength(254)
   email!: string;
 
-  @ApiProperty({ description: 'Single-use cryptographic reset token' })
+  @ApiProperty({
+    example: '482910',
+    description: '6-digit password reset code from the reset email',
+  })
   @Transform(trimString)
   @IsString()
-  @IsNotEmpty()
-  @MinLength(16)
-  @MaxLength(256)
+  @Matches(/^\d{6}$/, { message: 'Reset code must be exactly 6 digits.' })
   resetToken!: string;
 
   @ApiProperty({ example: 'NewStrongPass#2026' })
@@ -284,13 +304,6 @@ export class UpdateSecurityPreferencesDto {
   @IsOptional()
   @IsBoolean()
   requireReauthForSensitiveAction?: boolean;
-}
-
-export class VerifyPinDto {
-  @ApiProperty({ example: '2580' })
-  @IsString()
-  @Matches(/^\d{4,6}$/, { message: 'PIN must be 4 to 6 numeric digits.' })
-  pin!: string;
 }
 
 export class UpdateProfileDto {
